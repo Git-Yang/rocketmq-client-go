@@ -61,11 +61,12 @@ func WithResolver(resolver primitive.NsResolver) AdminOption {
 }
 
 type admin struct {
+	group   string
 	cli     internal.RMQClient
 	namesrv internal.Namesrvs
 
 	opts *adminOptions
-
+	startOnce sync.Once
 	closeOnce sync.Once
 }
 
@@ -81,12 +82,15 @@ func NewAdmin(opts ...AdminOption) (Admin, error) {
 	if err != nil {
 		return nil, err
 	}
-	//log.Printf("Client: %#v", namesrv.srvs)
-	return &admin{
+
+	a := &admin{
+		group: defaultOpts.GroupName,
 		cli:     cli,
 		namesrv: namesrv,
 		opts:    defaultOpts,
-	}, nil
+	}
+	a.start()
+	return a, nil
 }
 
 // CreateTopic create topic.
@@ -194,8 +198,16 @@ func (a *admin) DeleteTopic(ctx context.Context, opts ...OptionDelete) error {
 	return nil
 }
 
+func (a *admin) start() {
+	a.startOnce.Do(func() {
+		a.cli.RegisterAdmin(a.group, a)
+		a.cli.Start()
+	})
+}
+
 func (a *admin) Close() error {
 	a.closeOnce.Do(func() {
+		a.cli.UnregisterAdmin(a.group)
 		a.cli.Shutdown()
 	})
 	return nil

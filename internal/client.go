@@ -21,6 +21,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"go.uber.org/atomic"
 	"net"
 	"os"
 	"strconv"
@@ -91,6 +92,9 @@ type InnerConsumer interface {
 	ResetOffset(topic string, table map[primitive.MessageQueue]int64)
 }
 
+type InnerAdmin interface {
+}
+
 func DefaultClientOptions() ClientOptions {
 	opts := ClientOptions{
 		InstanceName: "DEFAULT",
@@ -154,6 +158,9 @@ type RMQClient interface {
 	PullMessage(ctx context.Context, brokerAddrs string, request *PullMessageRequestHeader) (*primitive.PullResult, error)
 	RebalanceImmediately()
 	UpdatePublishInfo(topic string, data *TopicRouteData, changed bool)
+
+	RegisterAdmin(group string, admin InnerAdmin)
+	UnregisterAdmin(group string)
 }
 
 var _ RMQClient = new(rmqClient)
@@ -165,6 +172,8 @@ type rmqClient struct {
 
 	// group -> InnerConsumer
 	consumerMap sync.Map
+	// group -> InnerAdmin
+	adminMap sync.Map
 	once        sync.Once
 
 	remoteClient remote.RemotingClient
@@ -174,6 +183,8 @@ type rmqClient struct {
 	namesrvs     *namesrvs
 	done         chan struct{}
 	shutdownOnce sync.Once
+
+	instanceCount atomic.Int32
 }
 
 var clientMap sync.Map
@@ -311,6 +322,7 @@ func GetOrNewRocketMQClient(option ClientOptions, callbackCh chan interface{}) R
 func (c *rmqClient) Start() {
 	//ctx, cancel := context.WithCancel(context.Background())
 	//c.cancel = cancel
+	c.instanceCount.Inc()
 	c.once.Do(func() {
 		if !c.option.Credentials.IsEmpty() {
 			c.remoteClient.RegisterInterceptor(remote.ACLInterceptor(c.option.Credentials))
@@ -443,6 +455,10 @@ func (c *rmqClient) removeClient() {
 }
 
 func (c *rmqClient) Shutdown() {
+	c.instanceCount.Dec()
+	if c.instanceCount.Load() > 0 {
+		return
+	}
 	c.shutdownOnce.Do(func() {
 		close(c.done)
 		c.close = true
@@ -735,6 +751,14 @@ func (c *rmqClient) RegisterProducer(group string, producer InnerProducer) {
 
 func (c *rmqClient) UnregisterProducer(group string) {
 	c.producerMap.Delete(group)
+}
+
+func (c *rmqClient) RegisterAdmin(group string, admin InnerAdmin) {
+	c.adminMap.Store(group, admin)
+}
+
+func (c *rmqClient) UnregisterAdmin(group string) {
+	c.adminMap.Delete(group)
 }
 
 func (c *rmqClient) RebalanceImmediately() {

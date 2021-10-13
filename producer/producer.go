@@ -48,7 +48,8 @@ type defaultProducer struct {
 	options     producerOptions
 	publishInfo sync.Map
 	callbackCh  chan interface{}
-
+	startOnce   sync.Once
+	closeOnce   sync.Once
 	interceptor primitive.Interceptor
 }
 
@@ -82,17 +83,20 @@ func NewDefaultProducer(opts ...Option) (*defaultProducer, error) {
 }
 
 func (p *defaultProducer) Start() error {
-	atomic.StoreInt32(&p.state, int32(internal.StateRunning))
-
-	p.client.RegisterProducer(p.group, p)
-	p.client.Start()
+	p.startOnce.Do(func() {
+		atomic.StoreInt32(&p.state, int32(internal.StateRunning))
+		p.client.RegisterProducer(p.group, p)
+		p.client.Start()
+	})
 	return nil
 }
 
 func (p *defaultProducer) Shutdown() error {
-	atomic.StoreInt32(&p.state, int32(internal.StateShutdown))
-	p.client.UnregisterProducer(p.group)
-	p.client.Shutdown()
+	p.closeOnce.Do(func() {
+		atomic.StoreInt32(&p.state, int32(internal.StateShutdown))
+		p.client.UnregisterProducer(p.group)
+		p.client.Shutdown()
+	})
 	return nil
 }
 
